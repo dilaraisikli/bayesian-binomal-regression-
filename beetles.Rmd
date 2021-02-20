@@ -1,0 +1,242 @@
+---
+title: "beetles"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+require(R2jags)
+require(bayesplot)
+require(ggplot2)
+require(LaplacesDemon)
+data =list( x = c(1.6907, 1.7242, 1.7552, 1.7842, 1.8113, 1.8369, 1.8610, 1.8839),
+      n = c(59, 60, 62, 56, 63, 59, 62, 60),
+      r = c(6, 13, 18, 28, 52, 53, 61, 60), N = 8)
+x = data$x
+n = data$n
+r = data$r
+N = data$N
+```
+
+http://www.openbugs.net/Examples/Beetles.html 
+
+
+The dataset describes the effect of some quantities of insecticide  on a given number of beetles. It contains records of amount of insecticide x_i used, number of initial beetles n_i and dead beetles r_i.
+```{r,echo=FALSE,fig.width=15,fig.height=6}
+qplot() + geom_point(aes(x=x, y=r/n))+
+  xlab("dose of insecticide") + ylab("# dead beetles / # initial beetles")
+
+```
+
+Given the number n_i of total beetles we want to predict how many of them will be killed r_i given that they are exposed on a concentracion x_i of insecticide. The model is binomial, given n_i trials we get r_i successes and we want to evaluate what is the probability of success p_i. We assume that the p_i depends somehow by the concentration x_i.
+The easisest dependce we can assume between p and x is a linear one, but since p is a probability we should sqeeze this lienear dependce to the domain of probabilities, i.e. using a link function.
+For this model we will assume as models:  p_i = sigmoid(beta0+beta1*x_i), p_i = Phi(beta0+beta1*x_i) and p_i = (tanh(beta0+beta1*x_i)+1)/2.
+As priors for beta0 and beta1 we are going to use : N(0,0.001).
+
+
+We are going now to simulate a Markov chain, for all the 3 models, to draw random variables from the posterior distribution to be able to estimate quantities of interest. 
+```{r}
+data_model = list("r","n","N","x")
+parameters_model = c("beta0","beta1")
+
+model_inits = function(){
+  list("beta0" = rnorm(0, sqrt(1000)),
+       "beta1" = rnorm(0, sqrt(1000))
+       )
+}
+
+sigmoid_model = function(){
+  for(i in 1:N){
+    r[i] ~ dbin(p[i],n[i])
+    # standardization as suggested by Chapman in chapter 8
+    logit(p[i]) = beta0_jnk + beta1*(x[i]-mean(x[]))
+  }
+  beta0 = beta0_jnk - beta1*mean(x[])
+  beta0_jnk ~ dnorm(0,0.001)
+  beta1 ~ dnorm(0,0.001)
+}
+
+probit_model = function(){
+  for(i in 1:N){
+    r[i] ~ dbin(p[i],n[i])
+    p[i] = phi(beta0_jnk + beta1*( x[i]-mean(x[]) ) )
+  }
+  
+  beta0 = beta0_jnk - beta1*mean(x[])
+  beta0_jnk ~ dnorm(0,0.001)
+  beta1 ~ dnorm(0,0.001)
+}
+
+tanh_model = function(){
+  for(i in 1:N){
+    r[i] ~ dbin(p[i],n[i])
+    #cloglog(p[i]) = beta0 + beta1*(x[i] - mean(x[]))
+    p[i] = (tanh(beta0_jnk+beta1*(x[i]-mean(x[])))+1)/2
+  }
+  
+  beta0 = beta0_jnk - beta1*mean(x[])
+  beta0_jnk ~ dnorm(0,0.001)
+  beta1 ~ dnorm(0,0.001)
+}
+sigmoid_chain = jags(data = data_model,                                    # DATA
+                      model.file = sigmoid_model, inits = model_inits,          # MODEL
+                      parameters.to.save = parameters_model,                  
+                      n.chains = 3, n.iter = 100000, n.burnin = 2000, n.thin=10)
+
+probit_chain = jags(data = data_model,                                    # DATA
+                      model.file = probit_model, inits = model_inits,          # MODEL
+                      parameters.to.save = parameters_model,                  
+                      n.chains = 3, n.iter = 100000, n.burnin = 2000, n.thin=10)
+
+tanh_chain = jags(data = data_model,                                    # DATA
+                      model.file = tanh_model, inits = model_inits,          # MODEL
+                      parameters.to.save = parameters_model,                  
+                      n.chains = 3, n.iter = 100000, n.burnin = 2000, n.thin=10)
+
+print(sigmoid_chain)
+print(probit_chain)
+print(tanh_chain)
+```
+
+As we can notice the chains produce reasonable results and from the DIC scores we see that the models are all close to eachother. 
+
+We can focus on the probit model and verify that the chain is stabile.
+We can evaluate the quality of the chain by looking at the traceplot of each parameter and the effective sample sizes.
+From the traceplots the chains looks stabile and the autocorrelation decays pretty fast, this means that the effective sample size is close to the real sample size and the variance of the sample mean is the variance of the chain divided by the number of simulated parameters.
+
+```{r}
+emp_avg_over_time = function(vec, step){
+  # given one vector vec this function evaluates the mean of the truncated vector vec[1:t], where t increases by the step 
+  # at each iteration.
+  # length(vec)/step should be an integer
+  avg_vec = rep(NA, length(vec)/step)
+  for(i in 1:length(vec)/step){
+    avg_vec[i] = mean(vec[1:i*step])
+  }
+  return(avg_vec)
+}
+```
+
+```{r,echo=FALSE,fig.width=15,fig.height=6}
+mcmc_combo(probit_chain$BUGSoutput$sims.array)
+mcmc_acf(probit_chain$BUGSoutput$sims.array)
+cat("\nThe effective sample sizesfor the 2 parameters are:",ESS(probit_chain$BUGSoutput$sims.matrix[,1]),
+    ESS(probit_chain$BUGSoutput$sims.matrix[,2]),
+    "\nVariance of sample means:", probit_chain$BUGSoutput$summary[1:2,2]**2/ESS(probit_chain$BUGSoutput$sims.matrix[,1:2]))
+
+step_size = 500
+x_seq = seq(1,probit_chain$BUGSoutput$n.sims/step_size)*step_size
+qplot() + geom_line(aes(x=x_seq, y=emp_avg_over_time(probit_chain$BUGSoutput$sims.matrix[,1],step_size))) +
+  ylab("emperical average ") + xlab("sample size") + ggtitle("Empirical average of beta0 as a function of the sample size")
+qplot() + geom_line(aes(x=x_seq, y=emp_avg_over_time(probit_chain$BUGSoutput$sims.matrix[,2],step_size)))+
+  ylab("emperical average ") + xlab("sample size")+ ggtitle("Empirical average of beta1 as a function of the sample size")
+```
+
+From the last 2 graphs we see the empirical averages as a function of the sample size and with good approximation they converge after approximately 5000 samples.
+
+
+
+Predictions:
+In the figures we use the empirical averages of the parameters drawn from the posterior to plot the predicted p(x) against the data points.
+```{r,echo=FALSE,fig.width=15,fig.height=6}
+x_seq = x_seq = seq(min(x),max(x),0.001)
+p_sigmoid = exp(sigmoid_chain$BUGSoutput$mean$beta0[1] +sigmoid_chain$BUGSoutput$mean$beta1[1]*x_seq)/(1+exp(sigmoid_chain$BUGSoutput$mean$beta0[1] +sigmoid_chain$BUGSoutput$mean$beta1[1]*x_seq))
+  
+
+p_probit = pnorm(probit_chain$BUGSoutput$mean$beta0[1] +probit_chain$BUGSoutput$mean$beta1[1]*x_seq)
+p_tanh = (tanh(tanh_chain$BUGSoutput$mean$beta0[1] +tanh_chain$BUGSoutput$mean$beta1[1]*x_seq)+1)/2
+
+qplot()+
+  geom_line(aes(x=x_seq,y=p_probit)) +
+  geom_line(aes(x=x_seq, y=p_sigmoid))+
+  geom_line(aes(x=x_seq,y=p_tanh))+
+  geom_point(aes(x=x,y=r/n))+
+  xlab("dose of insecticide")+ylab("")+ggtitle("ratio between total and dead beetles and estimated p(x) from the 3 models")
+
+
+
+cat("Parameters averages and sd for the 3 models \n")
+cbind("sigmoid mean"=sigmoid_chain$BUGSoutput$summary[1:2,1],"sigmoid sd"=sigmoid_chain$BUGSoutput$summary[1:2,2], 
+      "probit mean"=probit_chain$BUGSoutput$summary[1:2,1],"probit sd"=probit_chain$BUGSoutput$summary[1:2,2],
+      "tanh mean"=tanh_chain$BUGSoutput$summary[1:2,1],"tanh sd"=tanh_chain$BUGSoutput$summary[1:2,2])
+
+cat("\nEquitail credible intervals at level 95% \n")
+cbind("sigmoid lower"=sigmoid_chain$BUGSoutput$summary[1:2,3],"sigmoid upper"=sigmoid_chain$BUGSoutput$summary[1:2,7],
+      "probit lower"=probit_chain$BUGSoutput$summary[1:2,3],"probit upper"=probit_chain$BUGSoutput$summary[1:2,7],
+      "tanh lower"=tanh_chain$BUGSoutput$summary[1:2,3],"tanh upper"=tanh_chain$BUGSoutput$summary[1:2,7])
+
+cat("\nComparison through DIC\nsigmoid model:",sigmoid_chain$BUGSoutput$DIC,
+    "\nprobit model:", probit_chain$BUGSoutput$DIC, "\ntanh model:",tanh_chain$BUGSoutput$DIC,"\nAs we can see the best model is:", c("sigmoid","probit","tanh")[which.min(c(sigmoid_chain$BUGSoutput$DIC,probit_chain$BUGSoutput$DIC,tanh_chain$BUGSoutput$DIC))])
+
+```
+
+Further step is to predict the distribution for the number of dead beetles given the number of total beetles and the dose of insecticide. To do so we need the expected value of the conditional model evaluated in the points r_new,n_new,x_new, w.r.t. the posterior distribution. To estimate the expectation we can use the MC.
+```{r,fig.width=15,fig.height=6}
+predictive_p = function(r_new, n_new,x_new){
+  average = 0
+  for (i in 1:probit_chain$BUGSoutput$n.sims){
+    average = average +   dbinom(x=r_new, size=n_new, prob=pnorm(probit_chain$BUGSoutput$sims.matrix[i,1] +  probit_chain$BUGSoutput$sims.matrix[i,2]*x_new))
+  }
+  return(average/probit_chain$BUGSoutput$n.sims)
+}
+
+
+ggplot()+
+  geom_step(aes(x=rep(0:50), y=predictive_p(0:50,50,1.8)))+
+  geom_point(aes(x=rep(0:50), y=predictive_p(0:50,50,1.8)),color="red",alpha=0.85)+
+  scale_x_continuous(breaks = seq(0,50,1))+
+  xlab("dead beetles")+ ylab("")+
+  ggtitle("Posterior predictive distribution with n=50 and dose=1.8")
+
+ggplot()+
+  geom_step(aes(x=rep(0:50), y=predictive_p(0:50,50,1.9)))+
+  geom_point(aes(x=rep(0:50), y=predictive_p(0:50,50,1.9)),color="red",alpha=0.85)+
+  scale_x_continuous(breaks = seq(0,50,1))+
+  xlab("dead beetles")+ylab("")+
+  ggtitle("Posterior predictive distribution with n=50 and dose=1.9")
+
+ggplot()+
+  geom_step(aes(x=rep(0:50), y=predictive_p(0:50,50,1.65)))+
+  geom_point(aes(x=rep(0:50), y=predictive_p(0:50,50,1.65)),color="red",alpha=0.85)+
+  scale_x_continuous(breaks = seq(0,50,1))+
+  xlab("dead beetles")+ylab("")+
+  ggtitle("Posterior predictive distribution with n=50 and dose=1.65")
+
+```
+
+
+
+
+To further verify the correctness of the model we can simulate data from it and check if the chain works correctly:
+```{r}
+beta0 = -20
+beta1 = 10
+
+simulated_p = pnorm(beta0+beta1*x)
+
+simulated_r = rep(NA, N)
+for(i in 1:N){
+  simulated_r[i] = rbinom(n=1,prob=simulated_p[i],size=n[i])
+}
+
+data_model_simul = list("simulated_r","n","N","x")
+
+probit_model = function(){
+  for(i in 1:N){
+    simulated_r[i] ~ dbin(p[i],n[i])
+    p[i] = phi(beta0_jnk + beta1*( x[i]-mean(x[]) ) )
+  }
+  
+  beta0 = beta0_jnk - beta1*mean(x[])
+  beta0_jnk ~ dnorm(0,0.001)
+  beta1 ~ dnorm(0,0.001)
+}
+probit_chain_simul = jags(data = data_model_simul,                                    # DATA
+                      model.file = probit_model, inits = model_inits,          # MODEL
+                      parameters.to.save = parameters_model,                  
+                      n.chains = 3, n.iter = 100000, n.burnin = 15000, n.thin=10)
+
+print(probit_chain_simul)
+```
+
+As we can see the chain works pretty well on the simulated data, the mean values of the parameters are very close to the real beta0 and beta1.
+
